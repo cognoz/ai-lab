@@ -1,0 +1,18 @@
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+
+.venv
+__pycache__
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Local-only
+.env
+*.kubeconfig
+postgres-envs.sh
