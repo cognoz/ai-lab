@@ -12,6 +12,7 @@ Embeddings:   OpenAI text-embedding-3-small (1536 dims, cheap).
 Run: OPENAI_API_KEY=sk-... DATABASE_URL=postgres://... python rag.py
 """
 import os
+import time
 import numpy as np
 import psycopg
 from pgvector.psycopg import register_vector
@@ -22,6 +23,33 @@ EMBED_MODEL = "text-embedding-3-small"
 EMBED_DIMS = 1536
 CHAT_MODEL = "gpt-4o-mini"
 DB_URL = os.environ["DATABASE_URL"]
+
+
+def connect_with_retry(db_url: str = DB_URL, attempts: int = 5, base_delay: float = 1.0, **kwargs):
+    """psycopg.connect() with retry + exponential backoff
+    """
+    keepalive_defaults = {
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5,
+        "connect_timeout": 10,
+    }
+    keepalive_defaults.update(kwargs)
+
+    last_err = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return psycopg.connect(db_url, **keepalive_defaults)
+        except psycopg.OperationalError as e:
+            last_err = e
+            if attempt == attempts:
+                break
+            delay = base_delay * (2 ** (attempt - 1))  # 1s, 2s, 4s, 8s...
+            print(f"  [db] connection attempt {attempt}/{attempts} failed "
+                  f"({e.__class__.__name__}); retrying in {delay:.0f}s...")
+            time.sleep(delay)
+    raise last_err
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +164,7 @@ value spot, effect NoSchedule.
 """
 
 if __name__ == "__main__":
-    with psycopg.connect(DB_URL, autocommit=False) as conn:
+    with connect_with_retry(autocommit=False) as conn:
         init_db(conn)
         ingest(conn, "lab-notes", SAMPLE)
         for q in [

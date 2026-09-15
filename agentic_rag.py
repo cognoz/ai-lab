@@ -29,7 +29,7 @@ import os
 import psycopg
 from openai import OpenAI
 
-from rag import init_db, ingest, retrieve, SAMPLE
+from rag import init_db, ingest, retrieve, SAMPLE, connect_with_retry
 from agent_loop import get_weather, add
 
 client = OpenAI()
@@ -205,7 +205,7 @@ def run(user_prompt: str, tools: dict, max_turns: int = 10) -> str:
 
 
 if __name__ == "__main__":
-    with psycopg.connect(os.environ["DATABASE_URL"], autocommit=False) as conn:
+    with connect_with_retry(os.environ["DATABASE_URL"], autocommit=False) as conn:
         init_db(conn)
         conn.execute("TRUNCATE chunks")
         conn.commit()
