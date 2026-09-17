@@ -42,7 +42,7 @@ import os
 import psycopg
 from openai import OpenAI
 
-from rag import init_db, ingest, retrieve, SAMPLE, connect_with_retry
+from rag import init_db, retrieve, connect_with_retry
 from agent_loop import get_weather, add
 
 client = OpenAI()
@@ -138,17 +138,40 @@ def run(user_prompt: str, local_tools: dict, max_turns: int = 10, max_kb_calls: 
     kb_calls_made = 0
 
     for _turn in range(max_turns):
-        # THE ACTUAL FIX: once the cap is hit, stop OFFERING the tool at
-        # all. Returning an error message and hoping the model reads it
-        # was not a guarantee — we watched it get ignored eight times in
-        # a row. If the tool isn't in the list, the model cannot call it,
-        # full stop. This is the difference between telling the model
-        # "please don't" and making the thing physically impossible.
-        available_tools = TOOLS
+        # Tool availability is STAGED by how far we are into the fallback:
+        #
+        #   Stage 1 (KB not yet exhausted): offer everything. The model
+        #     picks the right tool for the question — search_knowledge_base
+        #     for ops questions, get_weather / add for their own kinds.
+        #
+        #   Stage 2 (KB exhausted, kb_calls_made >= max_kb_calls): the
+        #     question reached here because the KB couldn't answer it, so
+        #     it's an ops/knowledge question that now needs the web. Offer
+        #     ONLY web_search. We remove get_weather and add too — not just
+        #     the KB — because otherwise the model thrashes on the nearest
+        #     available wrong tool (we watched it jam "Kubernetes" into
+        #     get_weather's city field eight times). If the only escalation
+        #     tool is web_search, that thrashing is impossible: the sole
+        #     option left is the correct one.
         if kb_calls_made >= max_kb_calls:
-            available_tools = [t for t in TOOLS if t.get("name") != "search_knowledge_base"]
+            available_tools = [t for t in TOOLS if t.get("type") == "web_search"]
+        else:
+            available_tools = TOOLS
 
-        resp = client.responses.create(model=MODEL, input=input_items, tools=available_tools)
+        # THE FIX for "the model answered from memory without searching":
+        # on turn 0 only, force tool_choice="required" — the model MUST
+        # call SOME tool, it just can't skip straight to a free-text
+        # answer. We do NOT force it to call search_knowledge_base
+        # specifically (that would wrongly force a KB search on "what's
+        # 47+55?" too) — "required" lets it still pick the RIGHT tool
+        # (get_weather, add, or search_knowledge_base), it just can't
+        # pick NO tool. After turn 0, back to "auto": once results are
+        # in, the model should be free to decide it has enough to answer.
+        tool_choice = "required" if _turn == 0 else "auto"
+
+        resp = client.responses.create(
+            model=MODEL, input=input_items, tools=available_tools, tool_choice=tool_choice
+        )
         input_items += resp.output
 
         function_calls = [item for item in resp.output if item.type == "function_call"]
@@ -186,20 +209,19 @@ def run(user_prompt: str, local_tools: dict, max_turns: int = 10, max_kb_calls: 
 if __name__ == "__main__":
     with connect_with_retry(os.environ["DATABASE_URL"], autocommit=False) as conn:
         init_db(conn)
-        conn.execute("TRUNCATE chunks")
-        conn.commit()
-        ingest(conn, "lab-notes", SAMPLE)
-
         local_tools = build_local_tools(conn)
+        # NOTE: this file no longer ingests here — it now expects you've
+        # already run `python3 ingest_k8s_docs.py` once to populate the
+        # real Kubernetes-docs corpus. Re-ingesting the 3-sentence toy
+        # SAMPLE on every run would overwrite it. If you want the toy
+        # corpus back for a quick sanity check, ingest it explicitly with
+        # a one-off script instead of doing it here.
 
         prompts = [
-            # KB answers -> search_knowledge_base only, no web_search needed
-            "How do I make Kyverno work with Cosign v3?",
-            # KB can't answer, REAL web search should fire this time
-            "What is the latest stable Kubernetes version?",
-            # no search needed
+            "How do I expose my app so users outside the cluster can reach it?",
+            "What's the difference between a Deployment and a StatefulSet?",
+            "What is the latest stable Kubernetes version?",  # KB miss -> web
             "What is 47 plus 55?",
-            "Latest news swedish elections, gist?",
         ]
         for p in prompts:
             print(f"\nUSER: {p}")

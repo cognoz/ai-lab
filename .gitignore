@@ -16,3 +16,5 @@ __pycache__
 .env
 *.kubeconfig
 postgres-envs.sh
+corpus/
+k8s-website/

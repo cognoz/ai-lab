@@ -26,14 +26,23 @@ DB_URL = os.environ["DATABASE_URL"]
 
 
 def connect_with_retry(db_url: str = DB_URL, attempts: int = 5, base_delay: float = 1.0, **kwargs):
-    """psycopg.connect() with retry + exponential backoff
+    """psycopg.connect() with retry + exponential backoff, for a network
+    that occasionally drops the initial TCP handshake to Azure Postgres
+    (common on office wifi/VPN/proxy). Also sets TCP keepalives so an
+    established connection that goes idle for a while (e.g. between your
+    questions) doesn't get silently dropped by a NAT/firewall in between —
+    a second, related cause of "works sometimes" symptoms.
+
+    Retries connection-level failures only (OperationalError). A bad
+    DATABASE_URL or wrong password will still fail every attempt and
+    raise after the last one, which is correct — that's not transient.
     """
     keepalive_defaults = {
-        "keepalives": 1,
-        "keepalives_idle": 30,
-        "keepalives_interval": 10,
-        "keepalives_count": 5,
-        "connect_timeout": 10,
+        "keepalives": 1,          # enable TCP keepalive probes
+        "keepalives_idle": 30,    # start probing after 30s idle
+        "keepalives_interval": 10,  # probe every 10s
+        "keepalives_count": 5,    # give up after 5 missed probes
+        "connect_timeout": 10,    # don't hang forever on a dead network
     }
     keepalive_defaults.update(kwargs)
 
